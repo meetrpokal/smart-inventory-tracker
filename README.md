@@ -49,7 +49,7 @@ inventory-tracker/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/aarchiie/smart-inventory-tracker.git
+   git clone https://github.com/meetrpokal/smart-inventory-tracker.git
    cd smart-inventory-tracker
    ```
 
