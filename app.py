@@ -356,7 +356,7 @@ def get_inventory():
     # Add expiry information
     for item in data.get('expiry', []):
         expiry_date = datetime.fromtimestamp(item['expiry']).strftime('%Y-%m-%d')
-        status = 'Expired' if item['expiry'] <= today else 'Valid'
+        status = f"Expired({item['quantity']})" if item['expiry'] <= today else 'Valid'
         
         # Find if product already in inventory
         found = False
@@ -436,7 +436,7 @@ def export_csv():
     # Add expiry items
     for item in data.get('expiry', []):
         expiry_date = datetime.fromtimestamp(item['expiry']).strftime('%Y-%m-%d')
-        status = 'Expired' if item['expiry'] <= today else 'Valid'
+        status = f"Expired({item['quantity']})" if item['expiry'] <= today else 'Valid'
         csv_data += f"{item['product']},{item['quantity']},{expiry_date},{status}\n"
     
     with open('inventory_report.csv', 'w') as f:
