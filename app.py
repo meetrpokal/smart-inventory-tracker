@@ -9,16 +9,27 @@ import heapq
 
 app = Flask(__name__)
 
+import traceback
+
 # Setup MongoDB Connection
 MONGO_URI = os.getenv("MONGO_URI")
+client = None
+collection = None
 
 if MONGO_URI:
-    client = MongoClient(MONGO_URI)
-    db = client.inventory_db
-    collection = db.inventory_data
-else:
-    client = None
-    collection = None
+    try:
+        # Some servers need standard configurations to bypass tricky TLS requirements
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000, connectTimeoutMS=10000, socketTimeoutMS=10000)
+        # Attempt a ping to confirm connection
+        client.admin.command('ping')
+        db = client.inventory_db
+        collection = db.inventory_data
+        print("MongoDB Connected Successfully!")
+    except Exception as e:
+        print(f"Failed to connect to MongoDB: {e}")
+        traceback.print_exc()
+        client = None
+        collection = None
 
 # Temporary storage for inventory data (Local Fallback)
 INVENTORY_FILE = 'inventory_data.json'
@@ -26,24 +37,43 @@ INVENTORY_FILE = 'inventory_data.json'
 def load_inventory():
     # If on Vercel with MongoDB connected
     if collection is not None:
-        doc = collection.find_one({"_id": "main_inventory"})
-        if doc:
-            doc.pop('_id', None)
-            return doc
-        return {"stock": {}, "expiry": []}
+        try:
+            doc = collection.find_one({"_id": "main_inventory"})
+            if doc:
+                doc.pop('_id', None)
+                return doc
+        except Exception as e:
+            print(f"Error reading from MongoDB: {e}")
+            # Fall back below
+            
+    # If running locally without MongoDB, or if reading from MongoDB failed
+    try:
+        # Vercel's Serverless functions have read-only filesystems at runtime except for /tmp, 
+        # but reading from the bundle is fine if the file is pushed there initially
+        if os.path.exists(INVENTORY_FILE):
+            with open(INVENTORY_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error reading local JSON: {e}")
         
-    # If running locally without MongoDB
-    if os.path.exists(INVENTORY_FILE):
-        with open(INVENTORY_FILE, 'r') as f:
-            return json.load(f)
     return {"stock": {}, "expiry": []}
 
 def save_inventory(data):
     if collection is not None:
-        collection.update_one({"_id": "main_inventory"}, {"$set": data}, upsert=True)
-    else:
+        try:
+            collection.update_one({"_id": "main_inventory"}, {"$set": data}, upsert=True)
+            return
+        except Exception as e:
+            print(f"Error writing to MongoDB: {e}")
+            # Fall back to local storage attempt
+    
+    # Writing to file (will fail on Vercel since file system is Read-Only!)
+    try:
+        # Usually won't work on Vercel's read-only file system
         with open(INVENTORY_FILE, 'w') as f:
             json.dump(data, f)
+    except Exception as e:
+        print(f"Error writing local JSON: {e}")
 
 GUJARAT_GRAPH = {
     "Ahmedabad": {"Gandhinagar": 30, "Surat": 270, "Vadodara": 110, "Rajkot": 215, "Surendranagar": 120, "Nadiad": 55, "Himmatnagar": 85},
