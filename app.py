@@ -3,137 +3,139 @@ import json
 import time
 import os
 import re
+from pymongo import MongoClient
 from datetime import datetime
-import subprocess
-import tempfile
+import heapq
 
 app = Flask(__name__)
 
-# Temporary storage for inventory data
+# Setup MongoDB Connection
+MONGO_URI = os.getenv("MONGO_URI")
+
+if MONGO_URI:
+    client = MongoClient(MONGO_URI)
+    db = client.inventory_db
+    collection = db.inventory_data
+else:
+    client = None
+    collection = None
+
+# Temporary storage for inventory data (Local Fallback)
 INVENTORY_FILE = 'inventory_data.json'
 
 def load_inventory():
+    # If on Vercel with MongoDB connected
+    if collection is not None:
+        doc = collection.find_one({"_id": "main_inventory"})
+        if doc:
+            doc.pop('_id', None)
+            return doc
+        return {"stock": {}, "expiry": []}
+        
+    # If running locally without MongoDB
     if os.path.exists(INVENTORY_FILE):
         with open(INVENTORY_FILE, 'r') as f:
             return json.load(f)
     return {"stock": {}, "expiry": []}
 
 def save_inventory(data):
-    with open(INVENTORY_FILE, 'w') as f:
-        json.dump(data, f)
+    if collection is not None:
+        collection.update_one({"_id": "main_inventory"}, {"$set": data}, upsert=True)
+    else:
+        with open(INVENTORY_FILE, 'w') as f:
+            json.dump(data, f)
 
-def compile_cpp_if_needed():
-    """Compile the C++ program if it doesn't exist or is older than source"""
-    cpp_file = 'Inventory.cpp'  # Your C++ source file name
-    exe_file = 'inventory.exe' if os.name == 'nt' else 'inventory'      # Executable name
-    
-    # Check if we need to compile
-    need_compile = True
-    if os.path.exists(exe_file) and os.path.exists(cpp_file):
-        exe_time = os.path.getmtime(exe_file)
-        cpp_time = os.path.getmtime(cpp_file)
-        need_compile = cpp_time > exe_time
-    
-    if need_compile:
-        try:
-            result = subprocess.run(['g++', '-o', exe_file, cpp_file], 
-                                  capture_output=True, text=True, check=True)
-            print("C++ program compiled successfully")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"Compilation error: {e.stderr}")
-            return False
-    return True
+GUJARAT_GRAPH = {
+    "Ahmedabad": {"Gandhinagar": 30, "Surat": 270, "Vadodara": 110, "Rajkot": 215, "Surendranagar": 120, "Nadiad": 55, "Himmatnagar": 85},
+    "Gandhinagar": {"Ahmedabad": 30, "Kalol": 15},
+    "Surat": {"Ahmedabad": 270, "Vadodara": 150, "Valsad": 70, "Navsari": 30, "Bharuch": 60},
+    "Vadodara": {"Surat": 150, "Ahmedabad": 110, "Anand": 45, "Godhra": 65, "Bharuch": 75},
+    "Rajkot": {"Jamnagar": 90, "Ahmedabad": 215, "Bhuj": 240, "Morbi": 65, "Jetpur": 65},
+    "Jamnagar": {"Rajkot": 90, "Bhuj": 135, "Dwarka": 130},
+    "Bhuj": {"Rajkot": 240, "Jamnagar": 135, "Deesa": 290},
+    "Valsad": {"Surat": 70, "Vapi": 20},
+    "Vapi": {"Valsad": 20, "Navsari": 35},
+    "Navsari": {"Surat": 30, "Vapi": 35},
+    "Mehsana": {"Palanpur": 85, "Kalol": 40},
+    "Palanpur": {"Mehsana": 85, "Deesa": 55},
+    "Deesa": {"Palanpur": 55, "Bhuj": 290},
+    "Surendranagar": {"Ahmedabad": 120, "Bhavnagar": 100, "Morbi": 90},
+    "Botad": {"Bhavnagar": 70},
+    "Bhavnagar": {"Botad": 70, "Surendranagar": 100, "Amreli": 90},
+    "Anand": {"Vadodara": 45, "Nadiad": 20},
+    "Nadiad": {"Anand": 20, "Ahmedabad": 55},
+    "Dahod": {"Godhra": 80},
+    "Godhra": {"Dahod": 80, "Vadodara": 65},
+    "Amreli": {"Bhavnagar": 90, "Junagadh": 110},
+    "Junagadh": {"Amreli": 110, "Porbandar": 85, "Jetpur": 45, "Veraval": 75},
+    "Porbandar": {"Junagadh": 85, "Dwarka": 105, "Mangrol": 40},
+    "Dwarka": {"Porbandar": 105, "Jamnagar": 130},
+    "Morbi": {"Rajkot": 65, "Surendranagar": 90},
+    "Modasa": {"Himmatnagar": 40},
+    "Himmatnagar": {"Modasa": 40, "Ahmedabad": 85},
+    "Kalol": {"Gandhinagar": 15, "Mehsana": 40},
+    "Jetpur": {"Rajkot": 65, "Junagadh": 45},
+    "Mangrol": {"Porbandar": 40, "Veraval": 60},
+    "Veraval": {"Mangrol": 60, "Junagadh": 75},
+    "Bharuch": {"Vadodara": 75, "Surat": 60, "Ankleshwar": 12},
+    "Ankleshwar": {"Bharuch": 12}
+}
 
-def run_cpp_pathfinding(from_city, to_city):
-    """Run the C++ program to find shortest path"""
-    if not compile_cpp_if_needed():
-        return None
-    
-    try:
-        input_commands = f"8\n{from_city}\n{to_city}\n0\n"
+def find_shortest_path(start, end):
+    if start not in GUJARAT_GRAPH or end not in GUJARAT_GRAPH:
+        return {'status': 'error', 'message': 'Invalid city selection'}
         
-        # Run C++ program
-        exe_cmd = 'inventory.exe' if os.name == 'nt' else './inventory'
-        result = subprocess.run([exe_cmd], 
-                              input=input_commands, 
-                              capture_output=True, 
-                              text=True, 
-                              timeout=10)
-        
-        if result.returncode != 0:
-            print(f"C++ program error: {result.stderr}")
-            return None
-            
-        # Parse the output
-        output = result.stdout
-        return parse_path_output(output)
-        
-    except subprocess.TimeoutExpired:
-        print("C++ program timed out")
-        return None
-    except Exception as e:
-        print(f"Error running C++ program: {e}")
-        return None
-
-def parse_path_output(output):
-    """Parse the C++ program output to extract path information"""
-    try:
-        lines = output.strip().split('\n')
-        
-        # Look for PATH_START and PATH_END markers
-        path_start_idx = -1
-        path_end_idx = -1
-        total_cost = 0
-        
-        for i, line in enumerate(lines):
-            if 'PATH_START' in line:
-                path_start_idx = i
-            elif 'PATH_END' in line:
-                path_end_idx = i
-            elif 'Total cost:' in line:
-                # Extract total cost
-                cost_match = re.search(r'Total cost:\s*(\d+)', line)
-                if cost_match:
-                    total_cost = int(cost_match.group(1))
-        
-        if path_start_idx == -1 or path_end_idx == -1:
-            # Check for "No path" message
-            if any('No path' in line for line in lines):
-                return {
-                    'status': 'error',
-                    'message': 'No path found between the cities'
-                }
-            return None
-        
-        # Extract path information
-        path_lines = lines[path_start_idx + 2:path_end_idx]  # Skip PATH_START and header
-        path = []
-        distances = []
-        
-        for line in path_lines:
-            if line.strip():
-                # Parse format: "CityName (distance)"
-                match = re.match(r'(.+?)\s*\((\d+)\)', line.strip())
-                if match:
-                    city = match.group(1).strip()
-                    distance = int(match.group(2))
-                    path.append(city)
-                    distances.append(distance)
-        
-        if not path:
-            return None
-            
+    if start == end:
         return {
             'status': 'success',
-            'path': path,
-            'distances': distances,
-            'total_distance': total_cost
+            'path': [start],
+            'distances': [0],
+            'total_distance': 0
         }
+    
+    dist = {node: float('inf') for node in GUJARAT_GRAPH}
+    parent = {}
+    dist[start] = 0
+    pq = [(0, start)]
+    
+    while pq:
+        cur_dist, node = heapq.heappop(pq)
         
-    except Exception as e:
-        print(f"Error parsing path output: {e}")
-        return None
+        if cur_dist > dist[node]:
+            continue
+            
+        for nei, weight in GUJARAT_GRAPH[node].items():
+            if dist[node] + weight < dist[nei]:
+                dist[nei] = dist[node] + weight
+                parent[nei] = node
+                heapq.heappush(pq, (dist[nei], nei))
+                
+    if dist[end] == float('inf'):
+        return {'status': 'error', 'message': f'No path found between {start} and {end}'}
+        
+    # Reconstruct path
+    path = []
+    at = end
+    while at != start:
+        path.append(at)
+        at = parent[at]
+    path.append(start)
+    path.reverse()
+    
+    # Calculate cumulative distances
+    cumulative_dists = [0]
+    current_dist = 0
+    for i in range(1, len(path)):
+        weight = GUJARAT_GRAPH[path[i-1]][path[i]]
+        current_dist += weight
+        cumulative_dists.append(current_dist)
+        
+    return {
+        'status': 'success',
+        'path': path,
+        'distances': cumulative_dists,
+        'total_distance': dist[end]
+    }
 
 @app.route('/')
 def index():
@@ -328,13 +330,13 @@ def find_path():
     from_city = request.form['from']
     to_city = request.form['to']
     
-    # Use the actual C++ pathfinding
-    result = run_cpp_pathfinding(from_city, to_city)
+    # Use native Python pathfinding
+    result = find_shortest_path(from_city, to_city)
     
     if result is None:
         return jsonify({
             'status': 'error',
-            'message': 'Error running pathfinding algorithm'
+            'message': 'Error finding path'
         })
     
     if result['status'] == 'error':
